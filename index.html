@@ -1396,18 +1396,44 @@ function exportXls(rows, filename){
 function exportPdf(rows, title){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const M = 14; // margem lateral
   const planosPresentes = [...new Set(rows.map(c=>c.plano))].map(id=>planoInfo(id).label);
-  const planoSubtitle = planosPresentes.length===1 ? planosPresentes[0]
+  const planoTitulo = planosPresentes.length===1 ? planosPresentes[0]
     : (planosPresentes.length>1 ? planosPresentes.join(' + ') : 'Nenhum plano de contas');
+  const total = rows.reduce((s,c)=>s+c.valor,0);
 
-  doc.setFontSize(14);
-  doc.text(title, 14, 16);
-  doc.setFontSize(10.5);
-  doc.setTextColor(90,100,112);
-  doc.text(planoSubtitle, 14, 22.5);
-  doc.setTextColor(0,0,0);
+  // Faixa de cabeçalho: nome do plano de contas em destaque
+  doc.setFillColor(15,27,44);
+  doc.rect(0, 0, W, 38, 'F');
+  doc.setFillColor(47,111,235);
+  doc.rect(0, 38, W, 1.6, 'F');
+  doc.setTextColor(159,176,196);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(8.5);
+  doc.text(title.toUpperCase(), M, 11);
+  doc.setTextColor(255,255,255);
+  doc.setFont('helvetica','bold');
+  let tam = 24;
+  doc.setFontSize(tam);
+  // nomes longos (vários planos) diminuem pra caber em uma linha
+  while(doc.getTextWidth(planoTitulo) > W - 2*M && tam > 12){ tam -= 1; doc.setFontSize(tam); }
+  doc.text(planoTitulo, M, 25);
+  doc.setFont('helvetica','normal');
   doc.setFontSize(9);
-  doc.text('Gerado em ' + fmtDate(todayStr()), 14, 28.5);
+  doc.setTextColor(159,176,196);
+  doc.text('Gerado em ' + fmtDate(todayStr()), M, 33);
+
+  // Resumo: quantidade e total
+  doc.setTextColor(22,35,58);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(10);
+  doc.text(rows.length + ' despesa' + (rows.length===1?'':'s'), M, 49);
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(12);
+  doc.text('Total: ' + fmtMoney(total), W - M, 49, { align:'right' });
+
   // o comentário e a observação do pagamento vão na mesma célula do fornecedor (linhas de baixo),
   // e a forma de pagamento divide a coluna com a conta, pra tabela continuar cabendo na página
   const body = rows.map(c=>[
@@ -1418,17 +1444,42 @@ function exportPdf(rows, title){
     SITUACAO_LABEL[getSituacao(c)]
   ]);
   doc.autoTable({
-    startY: 34,
+    startY: 54,
+    margin: { left:M, right:M, bottom:18 },
     head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Forma / conta','Situação']],
     body,
-    styles:{ fontSize:8.5 },
-    headStyles:{ fillColor:[15,27,44] },
-    columnStyles:{ 2:{ cellWidth:26 }, 3:{ cellWidth:21 }, 4:{ cellWidth:21 }, 6:{ cellWidth:20 } },
+    styles:{ fontSize:8.5, cellPadding:2.6, textColor:[22,35,58], lineColor:[221,227,222], lineWidth:0.1 },
+    headStyles:{ fillColor:[15,27,44], textColor:[255,255,255], fontStyle:'bold' },
+    alternateRowStyles:{ fillColor:[245,247,245] },
+    columnStyles:{ 2:{ cellWidth:26, halign:'right', fontStyle:'bold' }, 3:{ cellWidth:21 }, 4:{ cellWidth:21 }, 6:{ cellWidth:20 } },
+    foot: [['TOTAL','', fmtMoney(total),'','','','']],
+    footStyles:{ fillColor:[233,237,233], textColor:[15,27,44], fontStyle:'bold' },
+    showFoot:'lastPage',
   });
-  const total = rows.reduce((s,c)=>s+c.valor,0);
-  const finalY = doc.lastAutoTable.finalY || 28;
-  doc.setFontSize(11);
-  doc.text('Total: ' + fmtMoney(total), 14, finalY + 10);
+
+  // Área de assinatura (vai pra uma página nova se não couber embaixo da tabela)
+  let y = (doc.lastAutoTable.finalY || 54) + 24;
+  if(y + 30 > H - 18){ doc.addPage(); y = 40; }
+  doc.setDrawColor(90,100,112);
+  doc.setLineWidth(0.3);
+  const larg = (W - 2*M - 16) / 2;
+  doc.line(M, y, M + larg, y);
+  doc.line(M + larg + 16, y, W - M, y);
+  doc.setTextColor(90,100,112);
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(9);
+  doc.text('Assinatura do responsável', M, y + 5);
+  doc.text('Data:   ____ / ____ / ________', M + larg + 16, y + 5);
+
+  // Rodapé com número de página
+  const paginas = doc.getNumberOfPages();
+  for(let i=1;i<=paginas;i++){
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(140,150,160);
+    doc.text('Controle de Despesas', M, H - 8);
+    doc.text('Página ' + i + ' de ' + paginas, W - M, H - 8, { align:'right' });
+  }
   doc.save((title==='Despesas selecionadas' ? 'despesas-selecionadas.pdf' : 'despesas-gerais.pdf'));
 }
 
