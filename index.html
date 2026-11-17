@@ -158,6 +158,25 @@ tbody tr:hover{background:#FAFBF9;}
 .cc-add-row{padding-top:12px;border-top:1px solid var(--rule);}
 .cc-row input[type="text"],.cc-add-row input[type="text"]{flex:1 1 120px;min-width:0;padding:8px 9px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
 
+.fixa-tag{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:20px;margin:4px 0 0 6px;background:#EEF3FD;color:var(--blue);}
+.alerta-fixas{margin:14px 24px 0;border:1px solid #E9CFA4;background:#FBEEDB;border-radius:8px;padding:10px 14px;}
+.alerta-fixas .alerta-titulo{font-size:12.5px;font-weight:700;color:#7A4A0E;margin-bottom:6px;}
+.alerta-fixas.vencida{border-color:#E7B4B4;background:#FBE6E6;}
+.alerta-fixas.vencida .alerta-titulo{color:var(--red);}
+.alerta-item{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:7px 0;border-top:1px solid rgba(0,0,0,.08);font-size:13px;}
+.alerta-item:first-of-type{border-top:none;}
+.alerta-item .txt{flex:1 1 260px;line-height:1.4;}
+.alerta-item .btns{display:flex;gap:8px;flex-wrap:wrap;}
+.btn-sm{padding:6px 11px;font-size:12px;}
+.fixa-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:11px 0;border-bottom:1px solid var(--rule);}
+.fixa-row:last-child{border-bottom:none;}
+.fixa-row .info{flex:1 1 220px;min-width:0;}
+.fixa-row .nome{font-weight:600;font-size:13.5px;}
+.fixa-row .meta{font-size:12px;color:var(--ink-soft);margin-top:3px;line-height:1.4;}
+.fixa-row .btns{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+.badge.fx-pendente{background:#FBEEDB;color:var(--amber);}
+.badge.fx-ignorada{background:#ECEFEC;color:var(--ink-soft);}
+.fixas-resumo{font-size:12.5px;color:var(--ink-soft);margin:-8px 0 12px;}
 .notice{margin:14px 24px 0;background:#FBEEDB;border:1px solid #E9CFA4;color:#7A4A0E;border-radius:8px;padding:11px 14px;font-size:12.5px;line-height:1.45;}
 
 .lock-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--navy-900);padding:20px;}
@@ -187,9 +206,11 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxhlewWTqDvTYWP
 const ACCESS_TOKEN = 'S_diM8z8pN3mUVIlSUwsG1Voe71el-NF';
 const APP_PASSWORD_HASH = '7509ca24a95e871446f3fdb1f39cfdb7b802fc6986899bb44ab63da9e5d097aa';
 const LOCK_STORAGE_KEY = 'despesas-unlocked';
-// Versão mínima do Apps Script (Code.gs) que este app espera. A versão 3 é a
-// que grava a forma de pagamento e a observação do pagamento.
-const BACKEND_VERSAO_MINIMA = 3;
+// Versão mínima do Apps Script (Code.gs) que este app espera. A versão 4 é a
+// que também grava as despesas fixas e os avisos ignorados do mês.
+const BACKEND_VERSAO_MINIMA = 4;
+// Avisa de uma despesa fixa ainda não lançada quando faltarem até este número de dias pro vencimento.
+const FIXAS_DIAS_ALERTA = 2;
 let lastSyncPayload = null;
 
 // Formas de pagamento. "conta" diz se a forma mexe numa conta corrente:
@@ -246,6 +267,9 @@ let state = {
   contas: [],
   planos: [],
   contasCorrentes: [],
+  fixasIgnoradas: [],
+  fixasModalOpen: false,
+  prefill: null,
   backendDesatualizado: false,
   backendSemContas: false,
   loading: true,
@@ -356,8 +380,126 @@ function pagamentoDetalhes(c){
 function applyContasCorrentes(data){
   const temContas = !!(data && Array.isArray(data.contasCorrentes));
   if(temContas) state.contasCorrentes = data.contasCorrentes;
+  // avisos de despesas fixas já ignorados neste mês (vêm junto da mesma resposta)
+  if(data && Array.isArray(data.fixasIgnoradas)) state.fixasIgnoradas = data.fixasIgnoradas;
   state.backendSemContas = !temContas;
   state.backendDesatualizado = !temContas || !(Number(data.versao) >= BACKEND_VERSAO_MINIMA);
+}
+
+// --- Despesas fixas ---------------------------------------------------------
+// Uma despesa marcada como "fixa" faz o fornecedor entrar na lista de fixas.
+// Em cada mês, a fixa está "lançada" se existe uma despesa dele com vencimento
+// naquele mês; senão está "pendente". O dia esperado do vencimento é o dia do
+// último vencimento lançado. Quando faltam até FIXAS_DIAS_ALERTA dias (ou já
+// passou) e ainda não foi lançada, o app avisa — e dá pra ignorar o aviso no mês.
+function diasEntre(aIso, bIso){
+  const [ya,ma,da] = aIso.split('-').map(Number);
+  const [yb,mb,db] = bIso.split('-').map(Number);
+  return Math.round((Date.UTC(yb,mb-1,db) - Date.UTC(ya,ma-1,da)) / 86400000);
+}
+function calcularFixas(){
+  const hoje = todayStr();
+  const mes = hoje.slice(0,7);
+  const [ano, m] = mes.split('-').map(Number);
+  const diasNoMes = new Date(ano, m, 0).getDate();
+  const grupos = new Map();
+  state.contas.forEach(c=>{
+    if(!c.fixa) return;
+    const chave = normalizeStr(c.fornecedor);
+    if(!chave) return;
+    if(!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(c);
+  });
+  const ordem = {pendente:1, ignorada:2, lancada:3};
+  const lista = [];
+  grupos.forEach((cs, chave)=>{
+    cs.sort((a,b)=>String(b.vencimento||'').localeCompare(String(a.vencimento||'')));
+    const ultima = cs[0];
+    const doMes = cs.find(c=>String(c.vencimento||'').slice(0,7)===mes) || null;
+    const ignorada = state.fixasIgnoradas.some(i=>i.chave===chave && i.mes===mes);
+    const status = doMes ? 'lancada' : (ignorada ? 'ignorada' : 'pendente');
+    const diaRef = Number(String(ultima.vencimento||'').slice(8,10)) || 1;
+    const vencEsperado = mes + '-' + String(Math.min(diaRef, diasNoMes)).padStart(2,'0');
+    const dias = diasEntre(hoje, vencEsperado);
+    lista.push({
+      chave, nome: ultima.fornecedor, plano: ultima.plano, valorUltimo: ultima.valor,
+      vencEsperado, dias, status, doMes, contas: cs,
+      alerta: status==='pendente' && dias <= FIXAS_DIAS_ALERTA,
+    });
+  });
+  return lista.sort((a,b)=> (a.alerta===b.alerta ? 0 : (a.alerta ? -1 : 1))
+    || ordem[a.status]-ordem[b.status]
+    || a.vencEsperado.localeCompare(b.vencEsperado)
+    || a.nome.localeCompare(b.nome,'pt-BR'));
+}
+function textoPrazoFixa(f){
+  if(f.dias===0) return 'vence hoje';
+  if(f.dias>0) return 'vence em ' + f.dias + ' dia' + (f.dias===1?'':'s') + ' (' + fmtDate(f.vencEsperado) + ')';
+  const atraso = -f.dias;
+  return 'o vencimento era ' + fmtDate(f.vencEsperado) + ' (' + atraso + ' dia' + (atraso===1?'':'s') + ' atrás)';
+}
+async function syncFixasIgnoradas(added, deletedIds, retriesLeft){
+  if(retriesLeft===undefined) retriesLeft = 2;
+  try{
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action:'sync', token: ACCESS_TOKEN, fixasIgnoradas: added, deletedFixasIgnoradasIds: deletedIds }),
+    });
+    const data = await res.json();
+    if(data && data.ok){
+      if(data.contas) state.contas = data.contas;
+      if(data.planos) state.planos = data.planos;
+      applyContasCorrentes(data);
+      state.error = null;
+      render();
+      return;
+    }
+    throw new Error((data && data.error) || 'Falha ao salvar');
+  }catch(e){
+    if(retriesLeft>0){
+      await new Promise(r=>setTimeout(r, 700));
+      return syncFixasIgnoradas(added, deletedIds, retriesLeft-1);
+    }
+    state.error = 'Não foi possível salvar agora (conexão instável). Tente novamente.';
+    render();
+  }
+}
+function ignorarFixaNoMes(chave){
+  const mes = todayStr().slice(0,7);
+  if(state.fixasIgnoradas.some(i=>i.chave===chave && i.mes===mes)) return;
+  const item = { id: chave + '|' + mes, chave, mes };
+  state.fixasIgnoradas.push(item);
+  render();
+  syncFixasIgnoradas([item], []);
+}
+function desfazerIgnorarFixa(chave){
+  const mes = todayStr().slice(0,7);
+  const id = chave + '|' + mes;
+  state.fixasIgnoradas = state.fixasIgnoradas.filter(i=>i.id!==id);
+  render();
+  syncFixasIgnoradas([], [id]);
+}
+function lancarFixa(chave){
+  const f = calcularFixas().find(x=>x.chave===chave);
+  if(!f) return;
+  state.prefill = { fornecedor: f.nome, plano: f.plano, valor: f.valorUltimo, vencimento: f.vencEsperado };
+  state.modalTipo = 'conta-a-pagar'; state.editId = null;
+  state.modalOpen = true; state.fixasModalOpen = false; state.exportOpen = false;
+  render();
+}
+function removerDasFixas(chave){
+  const f = calcularFixas().find(x=>x.chave===chave);
+  if(!f) return;
+  if(!confirm('Tirar "' + f.nome + '" das despesas fixas? As despesas já lançadas continuam como estão.')) return;
+  const ids = new Set(f.contas.map(c=>c.id));
+  const changed = [];
+  state.contas = state.contas.map(c=>{
+    if(!ids.has(c.id)) return c;
+    const u = {...c, fixa:false}; changed.push(u); return u;
+  });
+  render();
+  syncChange(changed, []);
 }
 
 function getSituacao(c){
@@ -591,6 +733,7 @@ function render(){
       </div>
       <div class="actions">
         <button class="btn btn-ghost" id="btn-lock" title="Bloquear app">🔒 Sair</button>
+        <button class="btn btn-ghost" id="btn-fixas">📌 Despesas fixas${(!state.loading && !state.error) ? (()=>{ const n = calcularFixas().filter(f=>f.alerta).length; return n ? ` (${n})` : ''; })() : ''}</button>
         <button class="btn btn-ghost" id="btn-planos">Planos de contas</button>
         <button class="btn btn-ghost" id="btn-contas">Contas correntes</button>
         <button class="btn btn-ghost" id="btn-import">Importar CSV</button>
@@ -615,8 +758,25 @@ function render(){
 
     ${state.backendDesatualizado && !state.loading && !state.error ? `
     <div class="notice"><b>Falta atualizar o Apps Script da planilha.</b> ${state.backendSemContas
-      ? 'Enquanto o novo Code.gs não for colado e reimplantado, os comentários, as contas correntes, a forma de pagamento e a observação dos pagamentos não ficam gravados.'
-      : 'Enquanto o novo Code.gs não for colado e reimplantado, a forma de pagamento e a observação dos pagamentos não ficam gravadas.'}</div>` : ''}
+      ? 'Enquanto o novo Code.gs não for colado e reimplantado, os comentários, as contas correntes, a forma de pagamento, a observação dos pagamentos e as despesas fixas não ficam gravados.'
+      : 'Enquanto o novo Code.gs não for colado e reimplantado, as despesas fixas (e o ignorar aviso) não ficam gravadas.'}</div>` : ''}
+
+    ${(()=>{
+      if(state.loading || state.error) return '';
+      const alertas = calcularFixas().filter(f=>f.alerta);
+      if(!alertas.length) return '';
+      const critico = alertas.some(f=>f.dias<0);
+      return `<div class="alerta-fixas ${critico?'vencida':''}">
+        <div class="alerta-titulo">⚠ Despesa fixa sem lançamento perto do vencimento</div>
+        ${alertas.map(f=>`<div class="alerta-item">
+          <div class="txt"><b>${escapeHtml(f.nome)}</b> ainda não foi lançada neste mês — ${textoPrazoFixa(f)}.</div>
+          <div class="btns">
+            <button class="btn btn-primary btn-sm" data-fixa-lancar="${escapeAttr(f.chave)}">Lançar agora</button>
+            <button class="btn btn-outline btn-sm" data-fixa-ignorar="${escapeAttr(f.chave)}">Ignorar esta despesa este mês</button>
+          </div>
+        </div>`).join('')}
+      </div>`;
+    })()}
 
     <div class="cards">
       <div class="card"><div class="label">A VENCER${state.filterPlano!=='todos'?' · '+planoInfo(state.filterPlano).label.toUpperCase():''}</div><div class="value">${fmtMoney(aVencer)}</div></div>
@@ -657,6 +817,7 @@ function render(){
         <span class="desmarcar" id="desmarcar-tudo">Desmarcar tudo</span>
       </div>
       <div class="right-actions">
+        <button class="btn btn-outline" id="btn-fixar" ${hasSelection?'':'disabled style="opacity:.5;cursor:not-allowed;"'}>${hasSelection && getSelectedRows().every(c=>c.fixa) ? '📌 Desmarcar como fixas' : '📌 Marcar como fixas'}</button>
         <button class="btn btn-green" id="btn-pagar" ${hasSelection?'':'disabled style="opacity:.5;cursor:not-allowed;"'}>✓ Pagar selecionadas</button>
       </div>
     </div>
@@ -683,7 +844,7 @@ function render(){
               return `
               <tr>
                 <td><input type="checkbox" class="row-check" data-id="${c.id}" ${state.selected.has(c.id)?'checked':''}></td>
-                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span>${c.comentario ? `<div class="comentario-line" title="${escapeAttr(c.comentario)}">💬 ${escapeHtml(c.comentario)}</div>` : ''}</td>
+                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span>${c.fixa ? '<span class="fixa-tag">📌 Fixa</span>' : ''}${c.comentario ? `<div class="comentario-line" title="${escapeAttr(c.comentario)}">💬 ${escapeHtml(c.comentario)}</div>` : ''}</td>
                 <td class="valor-cell">${fmtMoney(c.valor)}</td>
                 <td class="date-cell">${fmtDate(c.vencimento)}</td>
                 <td class="date-cell">${fmtDate(c.pagamento)}${c.pagamento ? pagamentoDetalhes(c) : ''}</td>
@@ -710,6 +871,7 @@ function render(){
     ${state.pagarModalOpen ? renderPagarModal() : ''}
     ${state.planosModalOpen ? renderPlanosModal() : ''}
     ${state.contasModalOpen ? renderContasModal() : ''}
+    ${state.fixasModalOpen ? renderFixasModal() : ''}
   `;
 
   restoreDrafts(drafts);
@@ -793,6 +955,47 @@ function contaSelectField(name, label, selectedId, obrigatorio){
     </div>`;
 }
 
+function renderFixasModal(){
+  const lista = calcularFixas();
+  const mes = todayStr().slice(0,7).split('-').reverse().join('/');
+  const lancadas = lista.filter(f=>f.status==='lancada').length;
+  return `
+    <div class="modal-overlay" id="fixas-overlay">
+      <div class="modal modal-wide">
+        <h2>Despesas fixas · ${mes}</h2>
+        ${lista.length ? `<p class="fixas-resumo"><b>${lancadas}</b> de <b>${lista.length}</b> já lançada${lancadas===1?'':'s'} neste mês.</p>` : ''}
+        <div class="planos-list" style="max-height:400px;">
+          ${lista.length===0 ? `<p style="font-size:13px;color:var(--ink-soft);line-height:1.5;">Nenhuma despesa fixa ainda. Ao lançar ou editar uma despesa, marque <b>Despesa fixa (todo mês)</b> — ou selecione despesas já lançadas na tela principal e clique em <b>Marcar como fixas</b>.</p>` : lista.map(f=>{
+            const plano = planoInfo(f.plano);
+            const rotulo = {lancada:'LANÇADA', pendente:'PENDENTE', ignorada:'IGNORADA'}[f.status];
+            const cls = {lancada:'paga', pendente:'fx-pendente', ignorada:'fx-ignorada'}[f.status];
+            let meta;
+            if(f.status==='lancada') meta = 'Vencimento ' + fmtDate(f.doMes.vencimento) + ' · ' + fmtMoney(f.doMes.valor);
+            else if(f.status==='ignorada') meta = 'Ignorada neste mês · costuma vencer dia ' + f.vencEsperado.slice(8,10);
+            else meta = 'Costuma vencer dia ' + f.vencEsperado.slice(8,10) + ' · último valor ' + fmtMoney(f.valorUltimo) + (f.alerta ? ' · <b style="color:var(--red);">' + textoPrazoFixa(f) + '</b>' : '');
+            return `
+            <div class="fixa-row">
+              <div class="info">
+                <div class="nome">${escapeHtml(f.nome)} <span class="plano-tag" style="display:inline-block;font-size:10.5px;font-weight:400;padding:2px 8px;border-radius:20px;color:#fff;background:${plano.color};margin-left:4px;">${plano.label}</span></div>
+                <div class="meta">${meta}</div>
+              </div>
+              <div class="btns">
+                <span class="badge ${cls}">${rotulo}</span>
+                ${f.status==='pendente' ? `<button type="button" class="btn btn-primary btn-sm" data-fixa-lancar="${escapeAttr(f.chave)}">Lançar</button><button type="button" class="btn btn-outline btn-sm" data-fixa-ignorar="${escapeAttr(f.chave)}">Ignorar este mês</button>` : ''}
+                ${f.status==='ignorada' ? `<button type="button" class="btn btn-outline btn-sm" data-fixa-desfazer="${escapeAttr(f.chave)}">Desfazer</button><button type="button" class="btn btn-primary btn-sm" data-fixa-lancar="${escapeAttr(f.chave)}">Lançar</button>` : ''}
+                <button type="button" class="icon-btn danger" data-fixa-remover="${escapeAttr(f.chave)}" title="Tirar das despesas fixas">✕</button>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" id="fixas-close">Fechar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderContasModal(){
   return `
     <div class="modal-overlay" id="contas-overlay">
@@ -874,6 +1077,9 @@ function renderModal(){
   const editing = state.editId ? state.contas.find(c=>c.id===state.editId) : null;
   const tipo = editing ? editing.tipo : state.modalTipo;
   const pago = !!(editing && editing.pagamento);
+  // vindo de "Lançar" nas despesas fixas: já traz fornecedor, plano, valor e vencimento esperado
+  const pre = (!editing && state.prefill) ? state.prefill : null;
+  const fixaMarcada = editing ? !!editing.fixa : !!pre;
   return `
     <div class="modal-overlay" id="modal-overlay">
       <div class="modal">
@@ -884,20 +1090,22 @@ function renderModal(){
           <button type="button" data-tipo="avulso" class="${tipo==='avulso'?'active':''}">Lançamento avulso</button>
         </div>` : ''}
         <form id="conta-form">
-          <div class="field"><label>Fornecedor / descrição</label><input type="text" name="fornecedor" list="fornecedores-list" autocomplete="off" value="${editing? escapeAttr(editing.fornecedor):''}" required>
+          <div class="field"><label>Fornecedor / descrição</label><input type="text" name="fornecedor" list="fornecedores-list" autocomplete="off" value="${editing? escapeAttr(editing.fornecedor):(pre?escapeAttr(pre.fornecedor):'')}" required>
             <datalist id="fornecedores-list">${fornecedoresSugeridos().map(f=>`<option value="${escapeAttr(f.nome)}"></option>`).join('')}</datalist></div>
-          <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" name="valor" value="${editing? editing.valor:''}" required></div>
+          <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" name="valor" value="${editing? editing.valor:(pre?pre.valor:'')}" required></div>
           <div class="field"><label>Plano de contas</label>
-            <select name="plano">${state.planos.map(p=>`<option value="${p.id}" ${editing&&editing.plano===p.id?'selected':''}>${p.label}</option>`).join('')}</select>
+            <select name="plano">${state.planos.map(p=>`<option value="${p.id}" ${(editing&&editing.plano===p.id)||(pre&&pre.plano===p.id)?'selected':''}>${p.label}</option>`).join('')}</select>
           </div>
           ${tipo==='conta-a-pagar' ? `
-          <div class="field"><label>Vencimento</label><input type="date" name="vencimento" value="${editing? editing.vencimento:''}" required></div>
+          <div class="field"><label>Vencimento</label><input type="date" name="vencimento" value="${editing? editing.vencimento:(pre?pre.vencimento:'')}" required></div>
           ` : `
           <div class="field"><label>Data</label><input type="date" name="vencimento" value="${editing? editing.vencimento: todayStr()}" required></div>
           `}
           ${(!editing && tipo==='avulso') ? formaPagamentoField('desp', [], true) + contaSelectField('contaPagamento', 'Conta debitada', '', true) : ''}
           ${pago ? formaPagamentoField('desp', parseFormas(editing.formaPagamento), false) + contaSelectField('contaPagamento', 'Conta debitada no pagamento', editing.contaPagamento||'', false) : ''}
           ${pago ? `<div class="field"><label>Observação do pagamento (opcional)</label><textarea name="obsPagamento" rows="2" maxlength="500" placeholder="Observação sobre o pagamento">${escapeHtml(editing.obsPagamento||'')}</textarea></div>` : ''}
+          <div class="field"><label class="forma-chip"><input type="checkbox" id="desp-fixa" name="fixa" value="1" ${fixaMarcada?'checked':''}><span>📌 Despesa fixa (todo mês)</span></label>
+            <div class="hint">Despesas fixas aparecem em "Despesas fixas" e o app avisa quando ainda não foram lançadas perto do vencimento.</div></div>
           <div class="field"><label>Comentário (opcional)</label><textarea name="comentario" rows="2" maxlength="500" placeholder="Observação sobre esta despesa">${editing ? escapeHtml(editing.comentario||'') : ''}</textarea></div>
           <div class="field">
             <label>Anexo (nota fiscal, boleto...)</label>
@@ -923,6 +1131,35 @@ function bindEvents(){
       location.reload();
     }
   });
+
+  app.querySelector('#btn-fixas').addEventListener('click', ()=>{
+    state.fixasModalOpen = true; state.exportOpen=false; render();
+  });
+  app.querySelectorAll('[data-fixa-lancar]').forEach(b=>b.addEventListener('click', ()=>lancarFixa(b.dataset.fixaLancar)));
+  app.querySelectorAll('[data-fixa-ignorar]').forEach(b=>b.addEventListener('click', ()=>ignorarFixaNoMes(b.dataset.fixaIgnorar)));
+  app.querySelectorAll('[data-fixa-desfazer]').forEach(b=>b.addEventListener('click', ()=>desfazerIgnorarFixa(b.dataset.fixaDesfazer)));
+  app.querySelectorAll('[data-fixa-remover]').forEach(b=>b.addEventListener('click', ()=>removerDasFixas(b.dataset.fixaRemover)));
+  const fixasOverlay = app.querySelector('#fixas-overlay');
+  if(fixasOverlay){
+    fixasOverlay.addEventListener('click', e=>{ if(e.target===fixasOverlay){ state.fixasModalOpen=false; render(); } });
+    app.querySelector('#fixas-close').addEventListener('click', ()=>{ state.fixasModalOpen=false; render(); });
+  }
+  const fixarBtn = app.querySelector('#btn-fixar');
+  if(fixarBtn && state.selected.size>0){
+    fixarBtn.addEventListener('click', ()=>{
+      const rows = getSelectedRows();
+      const marcar = !rows.every(c=>c.fixa);
+      const ids = new Set(rows.map(c=>c.id));
+      const changed = [];
+      state.contas = state.contas.map(c=>{
+        if(!ids.has(c.id)) return c;
+        const u = {...c, fixa: marcar}; changed.push(u); return u;
+      });
+      state.selected.clear();
+      render();
+      syncChange(changed, []);
+    });
+  }
 
   app.querySelector('#btn-planos').addEventListener('click', ()=>{
     state.planosModalOpen = true; state.exportOpen=false; render();
@@ -954,6 +1191,7 @@ function bindEvents(){
   });
 
   app.querySelector('#btn-nova').addEventListener('click', ()=>{
+    state.prefill = null;
     state.modalOpen = true; state.modalTipo='conta-a-pagar'; state.editId=null; state.exportOpen=false; render();
   });
 
@@ -1293,6 +1531,7 @@ function bindEvents(){
               valor, plano: fd.get('plano'),
               vencimento: fd.get('vencimento'),
               comentario,
+              fixa: fd.has('fixa'),
             };
             if(contaPagamento!==null) changedItem.contaPagamento = contaPagamento;
             if(pag.temForma){
@@ -1320,6 +1559,7 @@ function bindEvents(){
           vencimento: fd.get('vencimento'),
           pagamento: isAvulso ? fd.get('vencimento') : null,
           comentario,
+          fixa: fd.has('fixa'),
           contaPagamento: (isAvulso && contaPagamento) ? contaPagamento : '',
           formaPagamento: isAvulso ? formasLabel(pag.formas) : '',
           obsPagamento: '',
@@ -1337,7 +1577,7 @@ function bindEvents(){
   }
 }
 
-function closeModal(){ state.modalOpen=false; state.editId=null; render(); }
+function closeModal(){ state.modalOpen=false; state.editId=null; state.prefill=null; render(); }
 
 function fileToBase64(file){
   return new Promise((resolve, reject)=>{
