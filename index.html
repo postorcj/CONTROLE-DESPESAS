@@ -1645,15 +1645,15 @@ function exportPdf(rows, title){
   const total = rows.reduce((s,c)=>s+c.valor,0);
 
   // Faixa de cabeçalho: nome do plano de contas em destaque
-  doc.setFillColor(15,27,44);
+  doc.setFillColor(238,242,248);
   doc.rect(0, 0, W, 38, 'F');
-  doc.setFillColor(47,111,235);
-  doc.rect(0, 38, W, 1.6, 'F');
-  doc.setTextColor(159,176,196);
+  doc.setFillColor(160,180,215);
+  doc.rect(0, 38, W, 0.8, 'F');
+  doc.setTextColor(110,122,138);
   doc.setFont('helvetica','bold');
   doc.setFontSize(8.5);
   doc.text(title.toUpperCase(), M, 11);
-  doc.setTextColor(255,255,255);
+  doc.setTextColor(40,62,100);
   doc.setFont('helvetica','bold');
   let tam = 24;
   doc.setFontSize(tam);
@@ -1662,7 +1662,7 @@ function exportPdf(rows, title){
   doc.text(planoTitulo, M, 25);
   doc.setFont('helvetica','normal');
   doc.setFontSize(9);
-  doc.setTextColor(159,176,196);
+  doc.setTextColor(110,122,138);
   doc.text('Gerado em ' + fmtDate(todayStr()), M, 33);
 
   // Resumo: quantidade e total
@@ -1680,20 +1680,19 @@ function exportPdf(rows, title){
     c.fornecedor + (c.comentario ? '\nObs.: ' + c.comentario : '') + (c.obsPagamento ? '\nObs. pagamento: ' + c.obsPagamento : ''),
     planoInfo(c.plano).label, fmtMoney(c.valor),
     fmtDate(c.vencimento), fmtDate(c.pagamento),
-    [formaTexto(c), contaNome(c.contaPagamento)].filter(Boolean).join('\n') || '-',
     SITUACAO_LABEL[getSituacao(c)]
   ]);
   doc.autoTable({
     startY: 54,
     margin: { left:M, right:M, bottom:18 },
-    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Forma / conta','Situação']],
+    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Situação']],
     body,
     styles:{ fontSize:8.5, cellPadding:2.6, textColor:[22,35,58], lineColor:[221,227,222], lineWidth:0.1 },
-    headStyles:{ fillColor:[15,27,44], textColor:[255,255,255], fontStyle:'bold' },
-    alternateRowStyles:{ fillColor:[245,247,245] },
-    columnStyles:{ 2:{ cellWidth:26, halign:'right', fontStyle:'bold' }, 3:{ cellWidth:21 }, 4:{ cellWidth:21 }, 6:{ cellWidth:20 } },
-    foot: [['TOTAL','', fmtMoney(total),'','','','']],
-    footStyles:{ fillColor:[233,237,233], textColor:[15,27,44], fontStyle:'bold' },
+    headStyles:{ fillColor:[226,232,242], textColor:[40,62,100], fontStyle:'bold' },
+    alternateRowStyles:{ fillColor:[248,249,251] },
+    columnStyles:{ 2:{ cellWidth:28, halign:'right', fontStyle:'bold' }, 3:{ cellWidth:24 }, 4:{ cellWidth:24 }, 5:{ cellWidth:24 } },
+    foot: [['TOTAL','', fmtMoney(total),'','','']],
+    footStyles:{ fillColor:[238,242,248], textColor:[40,62,100], fontStyle:'bold' },
     showFoot:'lastPage',
   });
 
@@ -1704,12 +1703,12 @@ function exportPdf(rows, title){
   doc.setLineWidth(0.3);
   const larg = (W - 2*M - 16) / 2;
   doc.line(M, y, M + larg, y);
-  doc.line(M + larg + 16, y, W - M, y);
   doc.setTextColor(90,100,112);
   doc.setFont('helvetica','normal');
   doc.setFontSize(9);
   doc.text('Assinatura do responsável', M, y + 5);
-  doc.text('Data:   ____ / ____ / ________', M + larg + 16, y + 5);
+  doc.setFontSize(10);
+  doc.text('Data:  ____ / ____ / ________', M + larg + 16, y);
 
   // Rodapé com número de página
   const paginas = doc.getNumberOfPages();
