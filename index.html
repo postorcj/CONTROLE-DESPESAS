@@ -1691,9 +1691,6 @@ function exportPdf(rows, title){
     headStyles:{ fillColor:[226,232,242], textColor:[40,62,100], fontStyle:'bold' },
     alternateRowStyles:{ fillColor:[248,249,251] },
     columnStyles:{ 2:{ cellWidth:28, halign:'right', fontStyle:'bold' }, 3:{ cellWidth:24 }, 4:{ cellWidth:24 }, 5:{ cellWidth:24 } },
-    foot: [['TOTAL','', fmtMoney(total),'','','']],
-    footStyles:{ fillColor:[238,242,248], textColor:[40,62,100], fontStyle:'bold' },
-    showFoot:'lastPage',
   });
 
   // Área de assinatura (vai pra uma página nova se não couber embaixo da tabela)
