@@ -268,6 +268,8 @@ let state = {
   planos: [],
   contasCorrentes: [],
   fixasIgnoradas: [],
+  pushAppId: '',
+  pushAtivo: false,
   fixasModalOpen: false,
   prefill: null,
   backendDesatualizado: false,
@@ -382,8 +384,83 @@ function applyContasCorrentes(data){
   if(temContas) state.contasCorrentes = data.contasCorrentes;
   // avisos de despesas fixas já ignorados neste mês (vêm junto da mesma resposta)
   if(data && Array.isArray(data.fixasIgnoradas)) state.fixasIgnoradas = data.fixasIgnoradas;
+  // App ID do OneSignal (vem da planilha): é ele que liga o botão de notificações
+  if(data && typeof data.pushAppId === 'string') state.pushAppId = data.pushAppId;
   state.backendSemContas = !temContas;
   state.backendDesatualizado = !temContas || !(Number(data.versao) >= BACKEND_VERSAO_MINIMA);
+}
+
+// --- Notificações no celular (OneSignal) -------------------------------------
+// O aviso diário das 6h sai do Apps Script e chega aqui como notificação, mesmo
+// com o app fechado. Cada aparelho precisa tocar em "Ativar notificações" uma
+// vez. O arquivo push/onesignal/OneSignalSDKWorker.js precisa estar no GitHub.
+let pushPronto = null;
+function pushSuportado(){ return 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window; }
+function carregarOneSignal(){
+  if(pushPronto) return pushPronto;
+  pushPronto = new Promise((ok, erro)=>{
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    const base = location.pathname.replace(/[^/]*$/, ''); // ex.: "/CONTROLE-DESPESAS---CLAUDE/"
+    OneSignalDeferred.push(async OneSignal=>{
+      try{
+        await OneSignal.init({
+          appId: state.pushAppId,
+          serviceWorkerPath: base.slice(1) + 'push/onesignal/OneSignalSDKWorker.js',
+          serviceWorkerParam: { scope: base + 'push/onesignal/' }
+        });
+        ok(OneSignal);
+      }catch(e){ erro(e); }
+    });
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js';
+    sc.defer = true;
+    sc.onerror = ()=>erro(new Error('sem internet para carregar as notificações'));
+    document.head.appendChild(sc);
+  });
+  pushPronto.catch(()=>{ pushPronto = null; });
+  return pushPronto;
+}
+// Ao abrir o app: se este aparelho já tinha ativado, confere a inscrição e renova a etiqueta.
+async function prepararNotificacoes(){
+  if(!state.pushAppId || !pushSuportado() || Notification.permission!=='granted') return;
+  try{
+    const OneSignal = await carregarOneSignal();
+    const ativo = !!OneSignal.User.PushSubscription.optedIn;
+    if(ativo) OneSignal.User.addTag('papel', 'despesas');
+    if(ativo!==state.pushAtivo){ state.pushAtivo = ativo; render(); }
+  }catch(e){ console.log(e); }
+}
+async function alternarNotificacoes(){
+  if(!pushSuportado()){
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    alert(ios
+      ? 'No iPhone as notificações só funcionam com o app instalado na tela de início:\nno Safari toque em Compartilhar > "Adicionar à Tela de Início", abra o app pelo ícone e toque em "Ativar notificações" de novo.\n(precisa de iOS 16.4 ou mais novo)'
+      : 'Este navegador não aceita notificações. Use o Google Chrome.');
+    return;
+  }
+  if(Notification.permission==='denied'){
+    alert('As notificações deste app estão BLOQUEADAS no celular.\nLibere em: Configurações do navegador > Configurações do site > Notificações, e tente de novo.');
+    return;
+  }
+  try{
+    const OneSignal = await carregarOneSignal();
+    if(state.pushAtivo){
+      if(!confirm('Desativar as notificações neste aparelho?')) return;
+      await OneSignal.User.PushSubscription.optOut();
+      state.pushAtivo = false;
+    } else {
+      await OneSignal.Notifications.requestPermission();
+      if(Notification.permission==='granted'){
+        await OneSignal.User.PushSubscription.optIn();
+        OneSignal.User.addTag('papel', 'despesas');
+        state.pushAtivo = !!OneSignal.User.PushSubscription.optedIn;
+      }
+    }
+    render();
+  }catch(e){
+    alert('Não foi possível ativar as notificações agora. Confira a internet e tente de novo.');
+    console.log(e);
+  }
 }
 
 // --- Despesas fixas ---------------------------------------------------------
@@ -530,6 +607,7 @@ async function loadData(){
   }
   state.loading = false;
   render();
+  prepararNotificacoes();
 }
 
 // Envia só o que mudou (itens novos/editados e ids excluídos) pro Apps Script.
@@ -733,6 +811,7 @@ function render(){
       </div>
       <div class="actions">
         <button class="btn btn-ghost" id="btn-lock" title="Bloquear app">🔒 Sair</button>
+        ${state.pushAppId ? `<button class="btn btn-ghost" id="btn-notif" title="Avisos diários das 6h e de despesas fixas não lançadas">${state.pushAtivo ? '🔔 Notificações ativas' : '🔕 Ativar notificações'}</button>` : ''}
         <button class="btn btn-ghost" id="btn-fixas">📌 Despesas fixas${(!state.loading && !state.error) ? (()=>{ const n = calcularFixas().filter(f=>f.alerta).length; return n ? ` (${n})` : ''; })() : ''}</button>
         <button class="btn btn-ghost" id="btn-planos">Planos de contas</button>
         <button class="btn btn-ghost" id="btn-contas">Contas correntes</button>
@@ -1132,6 +1211,8 @@ function bindEvents(){
     }
   });
 
+  const btnNotif = app.querySelector('#btn-notif');
+  if(btnNotif) btnNotif.addEventListener('click', alternarNotificacoes);
   app.querySelector('#btn-fixas').addEventListener('click', ()=>{
     state.fixasModalOpen = true; state.exportOpen=false; render();
   });

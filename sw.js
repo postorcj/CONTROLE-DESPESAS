@@ -1,4 +1,4 @@
-const CACHE_NAME = 'controle-despesas-v1';
+const CACHE_NAME = 'controle-despesas-v2';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -17,6 +17,8 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
+  // Só leituras (GET) passam pelo cache; envios e o OneSignal (notificações) seguem direto pra rede.
+  if (e.request.method !== 'GET' || url.hostname.includes('onesignal')) return;
   // Nunca cachear as chamadas à planilha (Apps Script) — sempre buscar dados frescos da rede.
   if (url.hostname.includes('script.google.com')) return;
   // Para o resto (a casca do app), tenta a rede primeiro e cai pro cache se estiver offline.
